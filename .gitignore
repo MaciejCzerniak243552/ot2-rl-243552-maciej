@@ -1,2 +1,5 @@
 *.DS_Store
 *datasets
+*blood_cell_dataset
+*blood_cell_dataset_patched
+*dataset_patched
