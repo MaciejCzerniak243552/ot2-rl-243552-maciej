@@ -2,7 +2,9 @@
 
 This task demonstrates interaction with a robotics simulation environment using the Opentrons OT-2 simulator. The objective is to explore and understand fundamental robotics concepts by commanding the robot, observing its state, and determining the work envelope (operational boundaries) of the pipette tip.
 
-![OT-2 work envelope](Y2B-2023-OT2_Twin/work_envelope.gif)
+<p align="center">
+  <img src="Y2B-2023-OT2_Twin/work_envelope.gif" alt="OT-2 work envelope" width="800">
+</p>
 
 ## Work envelope (pipette tip coordinates)
 
