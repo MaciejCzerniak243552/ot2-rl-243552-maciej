@@ -239,10 +239,10 @@ class Simulation:
                 camera_target = [-0.3, 0, 0] # Point where the camera is looking at
                 up_vector = [0, 0, 1] # Usually the Z-axis is up
                 fov = 50 # Field of view
-                aspect = 320/240 # Aspect ratio (width/height)
+                aspect = 680/680 # Aspect ratio (width/height)
 
                 # Get camera image
-                width, height, rgbImg, depthImg, segImg = p.getCameraImage(width=320, height=240, viewMatrix=p.computeViewMatrix(camera_pos, camera_target, up_vector), projectionMatrix=p.computeProjectionMatrixFOV(fov, aspect, 0.1, 100.0))
+                width, height, rgbImg, depthImg, segImg = p.getCameraImage(width=680, height=680, viewMatrix=p.computeViewMatrix(camera_pos, camera_target, up_vector), projectionMatrix=p.computeProjectionMatrixFOV(fov, aspect, 0.1, 100.0))
                 
                 self.current_frame = rgbImg  # RGB array
                 #print(self.current_frame)
