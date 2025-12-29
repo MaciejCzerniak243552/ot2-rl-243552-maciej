@@ -8,3 +8,7 @@
 *wandb
 *Kaggle
 *data
+*.meshes
+*.meshes copy
+*models
+*runs

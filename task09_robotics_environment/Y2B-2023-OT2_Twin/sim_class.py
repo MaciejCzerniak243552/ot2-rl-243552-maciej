@@ -86,7 +86,7 @@ class Simulation:
             for j in range(grid_size):
                 if agent_count < num_agents:  # Check if more agents need to be placed
                     # Calculate position for each robot
-                    position = [-spacing * i, -spacing * j, 0.03]
+                    position = [-spacing * i, -spacing * j, 0.09]
                     robotId = p.loadURDF("ot_2_simulation_v6.urdf", position, [0,0,0,1],
                                         flags=p.URDF_USE_INERTIA_FROM_FILE)
                     start_position, start_orientation = p.getBasePositionAndOrientation(robotId)
@@ -436,7 +436,15 @@ class Simulation:
     
     # close the simulation
     def close(self):
-        p.disconnect()
+        # Safely disconnect if still connected
+        try:
+            if hasattr(self, "physicsClient") and p.isConnected(self.physicsClient):
+                p.disconnect(self.physicsClient)
+            elif p.isConnected():
+                p.disconnect()
+        except Exception:
+            # Ignore disconnect errors when already disconnected
+            pass
 
 
 
