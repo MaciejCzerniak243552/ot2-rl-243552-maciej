@@ -75,10 +75,14 @@ def train(
     SAC training.
     Logs to W&B, evaluates, and (optionally) uploads models as ClearML artifacts.
     """
+    os.environ['WANDB_API_KEY'] = 'b1e375dd07d0792bb5601ffbb8b45cf2f84f5d20'
     algo_name = "SAC"
     results = []
 
     print(f"=== Training {algo_name} ===")
+
+    is_remote = os.environ.get("CLEARML_TASK_ID") is not None
+    wandb_mode = "online" if not is_remote else "disabled"
 
     # --- W&B run for this algorithm ---
     run = wandb.init(
@@ -100,6 +104,7 @@ def train(
             "target_entropy": args.target_entropy,
         } if args is not None else None,
         reinit=True,  # allow multiple runs in one process
+        mode=wandb_mode,
     )
 
     # Create fresh training env
