@@ -1,15 +1,18 @@
+import os
+
+import cv2
+import numpy as np
+from patchify import patchify
+
+
 def extract_dish(img):
 
     # height, widh, center of image
-    if img.ndim == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        height, widh = gray.shape
-    elif img.ndim == 2:
-        gray = img
-        height, widh = img.shape
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    height, widh = gray.shape
 
     # apply Otsu thresholding
-    th, output_im = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    th, output_im = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
     print(f'Otsu algorithm selected the following threshold: {th}')
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(output_im)
@@ -47,14 +50,15 @@ def extract_dish(img):
     
     x, y, w, h, area = stats[best_label]
 
-    # ensure square that the Pertri dish is fully inside margin is added
-    x_m = max(x , 0)
-    y_m = max(y , 0)
+    # expand bbox slightly (30 px margin) to ensure dish is fully inside crop
+    margin = 30
+    x_m = max(x - margin, 0)
+    y_m = max(y - margin, 0)
 
     # crop
-    side = min(w, h)
-    x2 = x + side
-    y2 = y + side
+    side = min(w, h) + 2 * margin
+    x2 = min(x_m + side, img.shape[1])
+    y2 = min(y_m + side, img.shape[0])
     crop = img[y_m:y2, x_m:x2]
 
     # check crop is square

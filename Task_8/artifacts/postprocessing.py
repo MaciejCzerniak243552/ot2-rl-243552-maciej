@@ -1,3 +1,6 @@
+import numpy as np
+
+
 def unpadder(padded_image, padding):
     top_padding, bottom_padding, left_padding, right_padding = padding
 
