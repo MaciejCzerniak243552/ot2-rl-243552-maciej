@@ -104,7 +104,6 @@ def train(
             "target_entropy": args.target_entropy,
         } if args is not None else None,
         reinit=True,  # allow multiple runs in one process
-        mode=wandb_mode,
     )
 
     # Create fresh training env
@@ -140,7 +139,6 @@ def train(
     model = SAC(
         "MlpPolicy",
         env,
-        device="cuda",
         verbose=1,
         seed=base_seed,
         learning_rate=learning_rate,
