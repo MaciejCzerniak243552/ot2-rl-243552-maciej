@@ -97,7 +97,7 @@ class OT2Env(gym.Env):
 
         # Calculate the reward, this is something that you will need to experiment with to get the best results
         distance = float(np.linalg.norm(self.goal_position - pipette_position))
-        reward = self.prev_distance - distance
+        reward = - distance
         self.prev_distance = distance
 
         # next we need to check if the if the task has been completed and if the episode should be terminated
