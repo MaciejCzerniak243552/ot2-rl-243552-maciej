@@ -30,9 +30,9 @@ class OT2Env(gym.Env):
 
         # Reward/termination parameters
         self.success_threshold = 0.001  # 1 mm tolerance
-        self.success_reward = 50.0
-        self.step_penalty = 0.01
-        self.out_of_time_penalty = 50.0
+        self.success_reward = 150.0
+        self.step_penalty = 0.015
+        self.out_of_time_penalty = 100.0
 
         # keep track of the number of steps
         self.steps = 0
