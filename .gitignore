@@ -12,3 +12,4 @@
 *.meshes copy
 *models
 *runs
+/task09_robotics_environment/Y2B-2023-OT2_Twin/__pycache__
