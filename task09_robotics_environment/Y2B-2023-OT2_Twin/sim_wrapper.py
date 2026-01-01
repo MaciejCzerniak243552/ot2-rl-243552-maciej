@@ -48,7 +48,7 @@ class OT2Env(gym.Env):
 
         # Reset the state of the environment to an initial state
         # set a random goal position for the agent, consisting of x, y, and z coordinates within the working area (you determined these values in the previous datalab task)
-        self.goal_position = np.random.uniform(
+        self.goal_position = rng.uniform(
             low=self.env_low, high=self.env_high
         ).astype(np.float32)
 
@@ -102,7 +102,7 @@ class OT2Env(gym.Env):
 
         # Calculate the reward, this is something that you will need to experiment with to get the best results
         distance = float(np.linalg.norm(self.goal_position - pipette_position))
-        reward = self.prev_distance - distance - self.step_penalty
+        reward = self.prev_distance - distance
         self.prev_distance = distance
 
         # next we need to check if the if the task has been completed and if the episode should be terminated
