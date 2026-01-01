@@ -5,9 +5,9 @@ from sim_class import Simulation
 
 
 class OT2Env(gym.Env):
-    def __init__(self, render=False, max_episode_steps=1000):
-        super(OT2Env, self).__init__()
-        self.render = render
+    def __init__(self, render: bool = False, max_episode_steps: int = 1000):
+        super().__init__()
+        self.render_mode = render
         self.max_episode_steps = max_episode_steps
 
         # Working envelope bounds determined from the datalab task
@@ -37,11 +37,14 @@ class OT2Env(gym.Env):
         # keep track of the number of steps
         self.steps = 0
         self.prev_distance = None
+        self.goal_position = None
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         # being able to set a seed is required for reproducibility
-        if seed is not None:
-            np.random.seed(seed)
+        super().reset(seed=seed)
+
+        # Use env-specific RNG if available, otherwise fall back to global numpy
+        rng = getattr(self, "np_random", np.random)
 
         # Reset the state of the environment to an initial state
         # set a random goal position for the agent, consisting of x, y, and z coordinates within the working area (you determined these values in the previous datalab task)
@@ -75,12 +78,14 @@ class OT2Env(gym.Env):
 
     def step(self, action):
         # Execute one time step within the environment
-        # since we are only controlling the pipette position, we accept 3 values for the action and need to append 0 for the drop action
+        # Ensure action is in the valid range and correct dtype
         action = np.clip(
             np.asarray(action, dtype=np.float32),
             self.action_space.low,
             self.action_space.high,
         )
+
+        # Append 0.0 for the "drop" action dimension used by the simulation
         action = np.append(action, 0.0)
 
         # Call the environment step function
@@ -128,8 +133,12 @@ class OT2Env(gym.Env):
 
         return observation, reward, terminated, truncated, info
 
-    def render(self, mode="human"):
-        pass
-    
+    def render(self, mode: str = "human"):
+        # Hook for rendering
+        if self.render_mode and hasattr(self.sim, "render"):
+            self.sim.render()
+
     def close(self):
-        self.sim.close()
+        if hasattr(self.sim, "close"):
+            self.sim.close()
+        super().close()

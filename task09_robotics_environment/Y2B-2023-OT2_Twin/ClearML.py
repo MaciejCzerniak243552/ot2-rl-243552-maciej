@@ -25,11 +25,11 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 EVAL_EPISODES = 50
 
-ALGORITHMS = {
-    "SAC": SAC,
-}
-
-def make_env(seed):
+def make_env(seed: Optional[int]):
+    """
+    Create a monitored OT2Env.
+    Seeding is done via env.reset(seed=seed), which is Gymnasium-compliant.
+    """
     env = OT2Env(render=False, max_episode_steps=1000)
     env = Monitor(env)
     if seed is not None:
@@ -37,6 +37,10 @@ def make_env(seed):
     return env
 
 def evaluate_final_distance(model, episodes=EVAL_EPISODES, max_episode_steps=1000, seed=None):
+    """
+    Roll out a number of episodes and record the final distance to the goal.
+    """
+
     env = make_env(seed=seed)  # or seed=None to avoid fixed seeding
     final_distances = []
 
@@ -59,6 +63,7 @@ def evaluate_final_distance(model, episodes=EVAL_EPISODES, max_episode_steps=100
     env.close()
     if not final_distances:
         return np.nan, np.nan
+    
     return float(np.mean(final_distances)), float(np.std(final_distances))
 
 
@@ -76,13 +81,11 @@ def train(
     Logs to W&B, evaluates, and (optionally) uploads models as ClearML artifacts.
     """
     os.environ['WANDB_API_KEY'] = 'b1e375dd07d0792bb5601ffbb8b45cf2f84f5d20'
+
     algo_name = "SAC"
     results = []
 
     print(f"=== Training {algo_name} ===")
-
-    is_remote = os.environ.get("CLEARML_TASK_ID") is not None
-    wandb_mode = "online" if not is_remote else "disabled"
 
     # --- W&B run for this algorithm ---
     run = wandb.init(
@@ -155,7 +158,7 @@ def train(
     callbacks = [WandbCallback(log="all", verbose=1)]
 
     # -------- Incremental Training + Periodic Saving --------
-    save_every = 100_000     # how many steps per chunk
+    save_every = 500_000     # how many steps per chunk
     num_chunks = train_steps // save_every
 
     os.makedirs(f"models/{run.id}", exist_ok=True)
@@ -217,7 +220,7 @@ def train(
 
     # If env is Monitor(OT2ReachEnv), unwrap once
     base_env = eval_env.env if hasattr(eval_env, "env") else eval_env
-    tol = base_env.success_threshold  # same as your client requirement threshold
+    tol = base_env.success_threshold  # same as client requirement threshold - 0.001
 
     # Success rate loop uses a fresh env to avoid reusing closed one
     success_env_seed = None if base_seed is None else base_seed + 2
@@ -299,6 +302,7 @@ def train(
     )
 
     run.finish()
+    wandb.finish()
 
     # ---------- Aggregate & results ----------
 
@@ -311,7 +315,6 @@ def train(
     print("=== Benchmark Results (sorted by distance, then reward) ===")
     print(df_sorted.to_string(index=False))
 
-    wandb.finish()
     return df_sorted
 
 
