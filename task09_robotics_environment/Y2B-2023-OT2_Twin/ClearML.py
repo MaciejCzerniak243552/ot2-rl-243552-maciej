@@ -23,7 +23,72 @@ PROJECT = "ot2-rl-243552-full"   # you can change this
 MODELS_DIR = "models"
 os.makedirs(MODELS_DIR, exist_ok=True)
 
-EVAL_EPISODES = 50
+EVAL_EPISODES = 100
+
+def evaluate_episode_stats(
+    model,
+    episodes=EVAL_EPISODES,
+    max_episode_steps=1000,
+    seed=None,
+    success_threshold=0.001,
+):
+    """
+    Roll out episodes and collect richer stats: final/min distance, steps-to-done,
+    termination/truncation rates, and threshold hits at 10mm/5mm/1mm.
+    """
+    env = make_env(seed=seed)
+    finals, mins, steps_list = [], [], []
+    terminations, truncations = 0, 0
+    hits_10mm, hits_5mm, hits_1mm = 0, 0, 0
+
+    for i in range(episodes):
+        obs, info = env.reset(seed=None if seed is None else seed + i)
+        min_d = info.get("distance", float("inf"))
+        final_d = None
+        steps = 0
+
+        while True:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            d = info.get("distance")
+            if d is not None:
+                final_d = d
+                if d < min_d:
+                    min_d = d
+            steps += 1
+            if terminated or truncated or steps >= max_episode_steps:
+                terminations += int(terminated)
+                truncations += int(truncated or (steps >= max_episode_steps))
+                break
+
+        if final_d is None:
+            final_d = min_d
+        finals.append(final_d)
+        mins.append(min_d)
+        steps_list.append(steps)
+
+        if final_d < 0.01:
+            hits_10mm += 1
+        if final_d < 0.005:
+            hits_5mm += 1
+        if final_d < success_threshold:
+            hits_1mm += 1
+
+    env.close()
+
+    stats = {
+        "mean_final": float(np.mean(finals)) if finals else np.nan,
+        "std_final": float(np.std(finals)) if finals else np.nan,
+        "mean_min": float(np.mean(mins)) if mins else np.nan,
+        "std_min": float(np.std(mins)) if mins else np.nan,
+        "mean_steps": float(np.mean(steps_list)) if steps_list else np.nan,
+        "termination_rate": terminations / episodes if episodes else 0.0,
+        "truncation_rate": truncations / episodes if episodes else 0.0,
+        "success_rate_10mm": hits_10mm / episodes if episodes else 0.0,
+        "success_rate_5mm": hits_5mm / episodes if episodes else 0.0,
+        "success_rate_1mm": hits_1mm / episodes if episodes else 0.0,
+    }
+    return stats
 
 def make_env(seed: Optional[int]):
     """
@@ -160,6 +225,7 @@ def train(
     # -------- Incremental Training + Periodic Saving --------
     save_every = 500_000     # how many steps per chunk
     num_chunks = train_steps // save_every
+    remainder = train_steps % save_every
 
     os.makedirs(f"models/{run.id}", exist_ok=True)
 
@@ -193,6 +259,30 @@ def train(
             except Exception as e:
                 print(f"[{algo_name}] Failed to upload checkpoint artifact: {e}")
 
+    # Train leftover steps (or all steps if less than save_every)
+    if remainder > 0 or num_chunks == 0:
+        leftover = remainder if remainder > 0 else train_steps
+        print(f"[{algo_name}] Training final chunk of {leftover} steps ...")
+        model.learn(
+            total_timesteps=leftover,
+            callback=callbacks,
+            progress_bar=True,
+            reset_num_timesteps=False,
+            tb_log_name=f"runs/{run.id}",
+        )
+        checkpoint_path = f"models/{run.id}/{save_every*num_chunks + leftover}"
+        model.save(checkpoint_path)
+        print(f"[{algo_name}] Saved checkpoint: {checkpoint_path}.zip")
+        if task is not None:
+            try:
+                task.upload_artifact(
+                    name=f"{algo_name}_checkpoint_{save_every*num_chunks + leftover}",
+                    artifact_object=checkpoint_path + ".zip",
+                )
+                print(f"[{algo_name}] Uploaded checkpoint to ClearML: {checkpoint_path}.zip")
+            except Exception as e:
+                print(f"[{algo_name}] Failed to upload checkpoint artifact: {e}")
+
     train_time = time.time() - start_time
     env.close()
 
@@ -208,52 +298,39 @@ def train(
     )
 
     # --- Evaluation (distance-based) ---
-    print(f"[{algo_name}] Evaluating final distance to target...")
-    mean_dist, std_dist = evaluate_final_distance(
+    print(f"[{algo_name}] Evaluating distance and stability metrics...")
+    base_env = eval_env.env if hasattr(eval_env, "env") else eval_env
+    stats = evaluate_episode_stats(
         model,
         episodes=EVAL_EPISODES,
         max_episode_steps=1000,
         seed=base_seed,
+        success_threshold=base_env.success_threshold,
     )
 
-    successes = 0
-
-    # If env is Monitor(OT2ReachEnv), unwrap once
-    base_env = eval_env.env if hasattr(eval_env, "env") else eval_env
-    tol = base_env.success_threshold  # same as client requirement threshold - 0.001
-
-    # Success rate loop uses a fresh env to avoid reusing closed one
-    success_env_seed = None if base_seed is None else base_seed + 2
-    success_env = make_env(seed=success_env_seed)
-    for i in range(EVAL_EPISODES):
-        reset_seed = None if base_seed is None else success_env_seed + i
-        obs, info = success_env.reset(seed=reset_seed)
-        while True:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = success_env.step(action)
-            if terminated or truncated:
-                break
-
-        dist = info["distance"]  # OT2ReachEnv must put this in info
-        if dist < tol:
-            successes += 1
-
-    success_env.close()
     eval_env.close()
-
-    success_rate = successes / EVAL_EPISODES
 
     print(
         f"[{algo_name}] mean_reward={mean_reward:.2f} +/- {std_reward:.2f} (std), "
-        f"mean_final_dist={mean_dist:.4f} +/- {std_dist:.4f} (std), "
-        f"success_rate={success_rate:.2%}, train_time={train_time/60:.1f} min"
+        f"mean_final_dist={stats['mean_final']:.4f} +/- {stats['std_final']:.4f} (std), "
+        f"mean_min_dist={stats['mean_min']:.4f}, "
+        f"success_rate_1mm={stats['success_rate_1mm']:.2%}, "
+        f"success_rate_5mm={stats['success_rate_5mm']:.2%}, "
+        f"success_rate_10mm={stats['success_rate_10mm']:.2%}, "
+        f"train_time={train_time/60:.1f} min"
     )
 
     # --- Log to W&B ---
     wandb.define_metric("eval/mean_final_distance", summary="min")
     wandb.define_metric("eval/std_final_distance", summary="min")
+    wandb.define_metric("eval/mean_min_distance", summary="min")
+    wandb.define_metric("eval/std_min_distance", summary="min")
     wandb.define_metric("eval/success_rate", summary="max")
+    wandb.define_metric("eval/success_rate_5mm", summary="max")
+    wandb.define_metric("eval/success_rate_10mm", summary="max")
     wandb.define_metric("eval/success_count", summary="max")
+    wandb.define_metric("eval/mean_episode_len", summary="min")
+    wandb.define_metric("eval/truncation_rate", summary="min")
     wandb.define_metric("eval/mean_reward", summary="max")
     wandb.define_metric("eval/std_reward", summary="min")
 
@@ -261,10 +338,16 @@ def train(
         {
             "eval/mean_reward": mean_reward,
             "eval/std_reward": std_reward,
-            "eval/mean_final_distance": mean_dist,
-            "eval/std_final_distance": std_dist,
-            "eval/success_rate": success_rate,
-            "eval/success_count": successes,
+            "eval/mean_final_distance": stats["mean_final"],
+            "eval/std_final_distance": stats["std_final"],
+            "eval/mean_min_distance": stats["mean_min"],
+            "eval/std_min_distance": stats["std_min"],
+            "eval/success_rate": stats["success_rate_1mm"],
+            "eval/success_rate_5mm": stats["success_rate_5mm"],
+            "eval/success_rate_10mm": stats["success_rate_10mm"],
+            "eval/success_count": int(stats["success_rate_1mm"] * EVAL_EPISODES),
+            "eval/mean_episode_len": stats["mean_steps"],
+            "eval/truncation_rate": stats["truncation_rate"],
             "train/train_time_sec": train_time,
         },
         step=train_steps,
@@ -273,13 +356,25 @@ def train(
     # Summary (shows in W&B tables)
     run.summary["eval/mean_reward"] = mean_reward
     run.summary["std_reward"] = std_reward
-    run.summary["eval/mean_final_distance"] = mean_dist
-    run.summary["eval/std_final_distance"] = std_dist
-    run.summary["eval/success_count"] = successes
-    run.summary["eval/success_rate"] = success_rate
+    run.summary["eval/mean_final_distance"] = stats["mean_final"]
+    run.summary["eval/std_final_distance"] = stats["std_final"]
+    run.summary["eval/mean_min_distance"] = stats["mean_min"]
+    run.summary["eval/std_min_distance"] = stats["std_min"]
+    run.summary["eval/success_count"] = int(stats["success_rate_1mm"] * EVAL_EPISODES)
+    run.summary["eval/success_rate"] = stats["success_rate_1mm"]
+    run.summary["eval/success_rate_5mm"] = stats["success_rate_5mm"]
+    run.summary["eval/success_rate_10mm"] = stats["success_rate_10mm"]
+    run.summary["eval/mean_episode_len"] = stats["mean_steps"]
+    run.summary["eval/truncation_rate"] = stats["truncation_rate"]
     run.summary["train_time_sec"] = train_time
-    run.summary["last_checkpoint"] = f"models/{run.id}/{save_every*num_chunks}.zip"
-    run.summary["checkpoints"] = [f"models/{run.id}/{save_every*(i+1)}.zip" for i in range(num_chunks)]
+    run.summary["last_checkpoint"] = f"models/{run.id}/{save_every*num_chunks + (remainder if remainder > 0 else (train_steps if num_chunks == 0 else 0))}.zip"
+    run.summary["checkpoints"] = [
+        f"models/{run.id}/{save_every*(i+1)}.zip" for i in range(num_chunks)
+    ] + (
+        [f"models/{run.id}/{save_every*num_chunks + (remainder if remainder > 0 else train_steps)}.zip"]
+        if (remainder > 0 or num_chunks == 0)
+        else []
+    )
 
     results.append(
         {
@@ -289,10 +384,13 @@ def train(
             "eval_episodes": EVAL_EPISODES,
             "mean_reward": mean_reward,
             "std_reward": std_reward,
-            "mean_final_distance": mean_dist,
-            "std_final_distance": std_dist,
-            "success_count": successes,
-            "success_rate": success_rate,
+            "mean_final_distance": stats["mean_final"],
+            "std_final_distance": stats["std_final"],
+            "mean_min_distance": stats["mean_min"],
+            "std_min_distance": stats["std_min"],
+            "success_rate": stats["success_rate_1mm"],
+            "success_rate_5mm": stats["success_rate_5mm"],
+            "success_rate_10mm": stats["success_rate_10mm"],
             "train_time_sec": train_time,
             "checkpoints": [
                 f"models/{run.id}/{save_every*(i+1)}.zip"

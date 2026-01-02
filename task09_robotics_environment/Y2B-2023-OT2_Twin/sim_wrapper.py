@@ -9,10 +9,14 @@ class OT2Env(gym.Env):
         super().__init__()
         self.render_mode = render
         self.max_episode_steps = max_episode_steps
+        # Apply several Bullet steps per RL step so the pipette actually travels
+        self.frame_skip = 12
 
         # Working envelope bounds determined from the datalab task
         self.env_low = np.array([-0.1871, -0.1706, 0.1694], dtype=np.float32)
         self.env_high = np.array([0.2531, 0.2195, 0.2896], dtype=np.float32)
+        # Scale raw actions ([-1,1]) to meaningful joint velocities (m/s-ish)
+        self.velocity_scale = np.array([0.12, 0.12, 0.08], dtype=np.float32)
 
         # Create the simulation environment
         self.sim = Simulation(num_agents=1, render=render)
@@ -30,9 +34,9 @@ class OT2Env(gym.Env):
 
         # Reward/termination parameters
         self.success_threshold = 0.001  # 1 mm tolerance
-        self.success_reward = 150.0
-        self.step_penalty = 0.015
-        self.out_of_time_penalty = 100.0
+        self.success_reward = 220.0
+        self.step_penalty = 0.01
+        self.out_of_time_penalty = 50.0
 
         # keep track of the number of steps
         self.steps = 0
@@ -79,17 +83,16 @@ class OT2Env(gym.Env):
     def step(self, action):
         # Execute one time step within the environment
         # Ensure action is in the valid range and correct dtype
-        action = np.clip(
-            np.asarray(action, dtype=np.float32),
-            self.action_space.low,
-            self.action_space.high,
-        )
+        action = np.asarray(action, dtype=np.float32)
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        # Scale to usable velocities
+        action[:3] = action[:3] * self.velocity_scale
 
         # Append 0.0 for the "drop" action dimension used by the simulation
         action = np.append(action, 0.0)
 
         # Call the environment step function
-        states = self.sim.run([action])  # Why do we need to pass the action as a list? Think about the simulation class.
+        states = self.sim.run([action], num_steps=self.frame_skip)
 
         # now we need to process the observation and extract the relevant information, the pipette position, convert it to a numpy array, and append the goal position and make sure the array is of type np.float32
         first_key = next(iter(states))
@@ -102,12 +105,19 @@ class OT2Env(gym.Env):
 
         # Calculate the reward, this is something that you will need to experiment with to get the best results
         distance = float(np.linalg.norm(self.goal_position - pipette_position))
-        reward = self.prev_distance - distance
+        progress = self.prev_distance - distance
+        # Dense shaping: reward progress strongly, pull toward target, penalize time
+        reward = 100.0 * progress - 1.0 * distance - self.step_penalty
         self.prev_distance = distance
 
         # next we need to check if the if the task has been completed and if the episode should be terminated
         # To do this we need to calculate the distance between the pipette position and the goal position and if it is below a certain threshold, we will consider the task complete. 
         # What is a reasonable threshold? Think about the size of the pipette tip and the size of the plants.
+        # Intermediate bonuses aligned with points table to guide fine accuracy
+        if distance < 0.01:
+            reward += 4.0
+        if distance < 0.005:
+            reward += 6.0
         if distance < self.success_threshold:
             terminated = True
             # we can also give the agent a positive reward for completing the task
