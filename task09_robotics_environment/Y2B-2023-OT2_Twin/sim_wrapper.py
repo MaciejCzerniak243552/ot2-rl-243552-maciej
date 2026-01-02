@@ -10,13 +10,13 @@ class OT2Env(gym.Env):
         self.render_mode = render
         self.max_episode_steps = max_episode_steps
         # Apply several Bullet steps per RL step so the pipette actually travels
-        self.frame_skip = 12
+        self.frame_skip = 10
 
         # Working envelope bounds determined from the datalab task
         self.env_low = np.array([-0.1871, -0.1706, 0.1694], dtype=np.float32)
         self.env_high = np.array([0.2531, 0.2195, 0.2896], dtype=np.float32)
         # Scale raw actions ([-1,1]) to meaningful joint velocities (m/s-ish)
-        self.velocity_scale = np.array([0.12, 0.12, 0.08], dtype=np.float32)
+        self.velocity_scale = np.array([0.24, 0.24, 0.12], dtype=np.float32)
 
         # Create the simulation environment
         self.sim = Simulation(num_agents=1, render=render)
@@ -107,7 +107,7 @@ class OT2Env(gym.Env):
         distance = float(np.linalg.norm(self.goal_position - pipette_position))
         progress = self.prev_distance - distance
         # Dense shaping: reward progress strongly, pull toward target, penalize time
-        reward = 100.0 * progress - 1.0 * distance - self.step_penalty
+        reward = 100.0 * progress - 0.3 * distance - self.step_penalty
         self.prev_distance = distance
 
         # next we need to check if the if the task has been completed and if the episode should be terminated
