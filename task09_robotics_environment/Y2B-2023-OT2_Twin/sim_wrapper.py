@@ -11,6 +11,9 @@ class OT2Env(gym.Env):
         self.max_episode_steps = max_episode_steps
         # Apply several Bullet steps per RL step so the pipette actually travels
         self.frame_skip = 10
+        # Curriculum: start with nearby goals for first episodes
+        self.curriculum_resets = 200
+        self.curriculum_radius = 0.05  # 5 cm radius around current pipette
 
         # Working envelope bounds determined from the datalab task
         self.env_low = np.array([-0.1871, -0.1706, 0.1694], dtype=np.float32)
@@ -42,6 +45,7 @@ class OT2Env(gym.Env):
         self.steps = 0
         self.prev_distance = None
         self.goal_position = None
+        self.episode_count = 0
 
     def reset(self, seed=None, options=None):
         # being able to set a seed is required for reproducibility
@@ -49,12 +53,6 @@ class OT2Env(gym.Env):
 
         # Use env-specific RNG if available, otherwise fall back to global numpy
         rng = getattr(self, "np_random", np.random)
-
-        # Reset the state of the environment to an initial state
-        # set a random goal position for the agent, consisting of x, y, and z coordinates within the working area (you determined these values in the previous datalab task)
-        self.goal_position = rng.uniform(
-            low=self.env_low, high=self.env_high
-        ).astype(np.float32)
 
         # Call the environment reset function
         states = self.sim.reset(num_agents=1)
@@ -64,12 +62,25 @@ class OT2Env(gym.Env):
         pipette_position = np.array(
             states[first_key]["pipette_position"], dtype=np.float32
         )
+
+        # Curriculum: for the first N resets, place goal near current pipette
+        if self.episode_count < self.curriculum_resets:
+            offset = rng.uniform(-self.curriculum_radius, self.curriculum_radius, size=3)
+            self.goal_position = np.clip(
+                pipette_position + offset, self.env_low, self.env_high
+            ).astype(np.float32)
+        else:
+            self.goal_position = rng.uniform(
+                low=self.env_low, high=self.env_high
+            ).astype(np.float32)
+
         observation = np.concatenate(
             [pipette_position, self.goal_position]
         ).astype(np.float32)
 
         # Reset the number of steps
         self.steps = 0
+        self.episode_count += 1
         self.prev_distance = float(np.linalg.norm(self.goal_position - pipette_position))
 
         info = {

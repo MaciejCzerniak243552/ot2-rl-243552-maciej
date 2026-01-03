@@ -179,11 +179,10 @@ def train(
 
     # handle "auto" vs numeric target_entropy
     if args is not None:
-        target_entropy = (
-            args.target_entropy
-            if args.target_entropy == "auto"
-            else float(args.target_entropy)
-        )
+        if isinstance(args.target_entropy, str) and args.target_entropy.startswith("auto"):
+            target_entropy = args.target_entropy
+        else:
+            target_entropy = float(args.target_entropy)
         learning_rate = args.learning_rate
         gamma = args.gamma
         batch_size = args.batch_size
@@ -194,7 +193,7 @@ def train(
         gradient_steps = args.gradient_steps
     else:
         # Fallback to SAC defaults if args not provided
-        target_entropy = "auto"
+        target_entropy = "auto_0.5"
         learning_rate = 3e-4
         gamma = 0.99
         batch_size = 256
@@ -434,7 +433,7 @@ def main():
     parser.add_argument("--gradient_steps", type=int, default=1)
 
     # target_entropy can be "auto" or a number, so parse as string then convert later
-    parser.add_argument("--target_entropy", type=str, default="auto")
+    parser.add_argument("--target_entropy", type=str, default="auto_0.5")
     args = parser.parse_args()
 
     train_steps = args.train_steps
