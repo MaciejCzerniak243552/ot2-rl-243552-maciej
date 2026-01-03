@@ -84,7 +84,7 @@ class OT2Env(gym.Env):
             ).astype(np.float32)
 
         observation = np.concatenate(
-            [pipette_position, self.goal_position]
+            [pipette_position, self.goal_position, self.prev_distance]
         ).astype(np.float32)
 
         # Reset the number of steps
