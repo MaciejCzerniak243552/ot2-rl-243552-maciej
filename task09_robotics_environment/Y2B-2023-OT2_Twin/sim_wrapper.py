@@ -14,12 +14,18 @@ class OT2Env(gym.Env):
         # Curriculum: start with nearby goals for first episodes
         self.curriculum_resets = 200
         self.curriculum_radius = 0.05  # 5 cm radius around current pipette
+        # Keep some easy goals always (fraction of resets)
+        self.easy_goal_fraction = 0.25
+        self.easy_goal_radius = 0.05  # 5 cm
 
         # Working envelope bounds determined from the datalab task
         self.env_low = np.array([-0.1871, -0.1706, 0.1694], dtype=np.float32)
         self.env_high = np.array([0.2531, 0.2195, 0.2896], dtype=np.float32)
         # Scale raw actions ([-1,1]) to meaningful joint velocities (m/s-ish)
         self.velocity_scale = np.array([0.24, 0.24, 0.12], dtype=np.float32)
+        # Finer scaling when close to goal
+        self.near_goal_radius = 0.02  # 2 cm
+        self.near_goal_velocity_scale = np.array([0.12, 0.12, 0.06], dtype=np.float32)
 
         # Create the simulation environment
         self.sim = Simulation(num_agents=1, render=render)
@@ -63,9 +69,12 @@ class OT2Env(gym.Env):
             states[first_key]["pipette_position"], dtype=np.float32
         )
 
-        # Curriculum: for the first N resets, place goal near current pipette
-        if self.episode_count < self.curriculum_resets:
-            offset = rng.uniform(-self.curriculum_radius, self.curriculum_radius, size=3)
+        # Curriculum / easy-goal sampling
+        use_curriculum = self.episode_count < self.curriculum_resets
+        use_easy = rng.random() < self.easy_goal_fraction
+        if use_curriculum or use_easy:
+            radius = self.curriculum_radius if use_curriculum else self.easy_goal_radius
+            offset = rng.uniform(-radius, radius, size=3)
             self.goal_position = np.clip(
                 pipette_position + offset, self.env_low, self.env_high
             ).astype(np.float32)
@@ -97,7 +106,10 @@ class OT2Env(gym.Env):
         action = np.asarray(action, dtype=np.float32)
         action = np.clip(action, self.action_space.low, self.action_space.high)
         # Scale to usable velocities
-        action[:3] = action[:3] * self.velocity_scale
+        if self.prev_distance is not None and self.prev_distance < self.near_goal_radius:
+            action[:3] = action[:3] * self.near_goal_velocity_scale
+        else:
+            action[:3] = action[:3] * self.velocity_scale
 
         # Append 0.0 for the "drop" action dimension used by the simulation
         action = np.append(action, 0.0)
@@ -119,6 +131,9 @@ class OT2Env(gym.Env):
         progress = self.prev_distance - distance
         # Dense shaping: reward progress strongly, pull toward target, penalize time
         reward = 100.0 * progress - 0.3 * distance - self.step_penalty
+        # Fine accuracy bonus to help lock in sub-centimeter behavior
+        if distance < 0.01:
+            reward += 2.0  # extra pull inside 1 cm (in addition to below)
         self.prev_distance = distance
 
         # next we need to check if the if the task has been completed and if the episode should be terminated
