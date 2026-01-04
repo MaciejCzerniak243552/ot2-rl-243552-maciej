@@ -35,8 +35,9 @@ class OT2Env(gym.Env):
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(3,), dtype=np.float32
         )
-        obs_low = np.concatenate([self.env_low, self.env_low]).astype(np.float32)
-        obs_high = np.concatenate([self.env_high, self.env_high]).astype(np.float32)
+        # Add prev_distance as an extra observable scalar (bounded conservatively by 1.0 m)
+        obs_low = np.concatenate([self.env_low, self.env_low, [0.0]]).astype(np.float32)
+        obs_high = np.concatenate([self.env_high, self.env_high, [1.0]]).astype(np.float32)
         self.observation_space = spaces.Box(
             low=obs_low, high=obs_high, dtype=np.float32
         )
@@ -83,14 +84,15 @@ class OT2Env(gym.Env):
                 low=self.env_low, high=self.env_high
             ).astype(np.float32)
 
-        observation = np.concatenate(
-            [pipette_position, self.goal_position, self.prev_distance]
-        ).astype(np.float32)
-
-        # Reset the number of steps
+        # Reset counters and distances
         self.steps = 0
-        self.episode_count += 1
         self.prev_distance = float(np.linalg.norm(self.goal_position - pipette_position))
+        self.episode_count += 1
+
+        extras = np.array([self.prev_distance], dtype=np.float32)
+        observation = np.concatenate(
+            [pipette_position, self.goal_position, extras]
+        ).astype(np.float32)
 
         info = {
             "distance": self.prev_distance,
@@ -166,6 +168,11 @@ class OT2Env(gym.Env):
 
         # increment the number of steps
         self.steps += 1
+
+        extras = np.array([self.prev_distance], dtype=np.float32)
+        observation = np.concatenate(
+            [pipette_position, self.goal_position, extras]
+        ).astype(np.float32)
 
         return observation, reward, terminated, truncated, info
 
