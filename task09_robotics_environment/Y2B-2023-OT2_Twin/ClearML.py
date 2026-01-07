@@ -11,9 +11,12 @@ from typing import Optional
 import wandb
 from wandb.integration.sb3 import WandbCallback
 from sim_wrapper import OT2Env
-from stable_baselines3 import SAC
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # ----------------- W&B / general config -----------------
 
@@ -22,134 +25,114 @@ PROJECT = "ot2-rl-243552-full"   # you can change this
 
 MODELS_DIR = "models"
 os.makedirs(MODELS_DIR, exist_ok=True)
+TENSORBOARD_DIR = "tb"
+os.makedirs(TENSORBOARD_DIR, exist_ok=True)
 
-EVAL_EPISODES = 100
+EVAL_EPISODES = 50
+CHECKPOINT_FREQ = 200_000
 
-def evaluate_episode_stats(
-    model,
-    episodes=EVAL_EPISODES,
-    max_episode_steps=1000,
-    seed=None,
-    success_threshold=0.001,
-):
-    """
-    Roll out episodes and collect richer stats: final/min distance, steps-to-done,
-    termination/truncation rates, and threshold hits at 10mm/5mm/1mm.
-    """
-    env = make_env(seed=seed)
-    finals, mins, steps_list = [], [], []
-    terminations, truncations = 0, 0
-    hits_10mm, hits_5mm, hits_1mm = 0, 0, 0
 
-    for i in range(episodes):
-        obs, info = env.reset(seed=None if seed is None else seed + i)
-        min_d = info.get("distance", float("inf"))
-        final_d = None
-        steps = 0
-
-        while True:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-            d = info.get("distance")
-            if d is not None:
-                final_d = d
-                if d < min_d:
-                    min_d = d
-            steps += 1
-            if terminated or truncated or steps >= max_episode_steps:
-                terminations += int(terminated)
-                truncations += int(truncated or (steps >= max_episode_steps))
-                break
-
-        if final_d is None:
-            final_d = min_d
-        finals.append(final_d)
-        mins.append(min_d)
-        steps_list.append(steps)
-
-        if final_d < 0.01:
-            hits_10mm += 1
-        if final_d < 0.005:
-            hits_5mm += 1
-        if final_d < success_threshold:
-            hits_1mm += 1
-
-    env.close()
-
-    stats = {
-        "mean_final": float(np.mean(finals)) if finals else np.nan,
-        "std_final": float(np.std(finals)) if finals else np.nan,
-        "mean_min": float(np.mean(mins)) if mins else np.nan,
-        "std_min": float(np.std(mins)) if mins else np.nan,
-        "mean_steps": float(np.mean(steps_list)) if steps_list else np.nan,
-        "termination_rate": terminations / episodes if episodes else 0.0,
-        "truncation_rate": truncations / episodes if episodes else 0.0,
-        "success_rate_10mm": hits_10mm / episodes if episodes else 0.0,
-        "success_rate_5mm": hits_5mm / episodes if episodes else 0.0,
-        "success_rate_1mm": hits_1mm / episodes if episodes else 0.0,
-    }
-    return stats
-
-def make_env(seed: Optional[int]):
-    """
-    Create a monitored OT2Env.
-    Seeding is done via env.reset(seed=seed), which is Gymnasium-compliant.
-    """
-    env = OT2Env(render=False, max_episode_steps=1000)
+def make_env(seed=None):
+    env = OT2Env(render_mode=None, max_episode_steps=1000)
     env = Monitor(env)
     if seed is not None:
         env.reset(seed=seed)
     return env
 
-def evaluate_final_distance(model, episodes=EVAL_EPISODES, max_episode_steps=1000, seed=None):
-    """
-    Roll out a number of episodes and record the final distance to the goal.
-    """
-
-    env = make_env(seed=seed)  # or seed=None to avoid fixed seeding
+def evaluate_final_distance(
+    model,
+    episodes=EVAL_EPISODES,
+    max_episode_steps=1000,
+    seed=None,
+    obs_rms=None,
+):
+    env = make_vec_env(make_env, n_envs=1, vec_env_cls=DummyVecEnv, seed=seed)
+    env = VecNormalize(env, training=False, norm_obs=True, norm_reward=False, clip_obs=10)
+    if obs_rms is not None:
+        env.obs_rms = obs_rms
     final_distances = []
 
-    for i in range(episodes):
-        obs, info = env.reset(seed=None if seed is None else seed + i)
+    for _ in range(episodes):
+        obs = env.reset()
         step = 0
-        last_distance = None
+        last_info = None
 
         while True:
             action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
-            last_distance = info.get("distance")
+            obs, _, dones, infos = env.step(action)
+            last_info = infos[0]
             step += 1
-            if terminated or truncated or step >= max_episode_steps:
+            if bool(dones[0]) or step >= max_episode_steps:
                 break
 
-        if last_distance is not None:
-            final_distances.append(last_distance)
+        if last_info is not None:
+            last_distance = last_info.get("distance")
+            if last_distance is not None:
+                final_distances.append(last_distance)
 
     env.close()
     if not final_distances:
         return np.nan, np.nan
-    
     return float(np.mean(final_distances)), float(np.std(final_distances))
+
+def log_artifacts(model_path, artifact_name, task=None):
+    if wandb.run is not None:
+        try:
+            artifact = wandb.Artifact(name=artifact_name, type="model")
+            artifact.add_file(model_path + ".zip")
+            wandb.log_artifact(artifact)
+            print(f"[{artifact_name}] Uploaded model to W&B artifacts.")
+        except Exception as e:
+            print(f"[{artifact_name}] Failed to upload artifact to W&B: {e}")
+
+    if task is not None:
+        try:
+            task.upload_artifact(
+                name=artifact_name,
+                artifact_object=model_path + ".zip",
+            )
+            print(f"[{artifact_name}] Uploaded model to ClearML artifacts.")
+        except Exception as e:
+            print(f"[{artifact_name}] Failed to upload artifact to ClearML: {e}")
+
+class CheckpointArtifactCallback(BaseCallback):
+    def __init__(self, save_freq, save_dir, algo_name, task=None, verbose=0):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.save_dir = save_dir
+        self.algo_name = algo_name
+        self.task = task
+        self.last_saved_step = 0
+
+    def _save_checkpoint(self, step):
+        model_path = os.path.join(self.save_dir, f"{self.algo_name}_{step}_steps")
+        self.model.save(model_path)
+        if self.verbose > 0:
+            print(f"[{self.algo_name}] Saved checkpoint to {model_path}.zip")
+        log_artifacts(model_path, f"{self.algo_name}_checkpoint_{step}", self.task)
+
+    def _on_step(self):
+        if self.save_freq <= 0:
+            return True
+        if self.num_timesteps % self.save_freq != 0:
+            return True
+        self.last_saved_step = self.num_timesteps
+        self._save_checkpoint(self.last_saved_step)
+        return True
 
 
 # ----------------- Training function -----------------
 
 
-def train(
-    train_steps: int,
-    base_seed: int,
-    task: Optional[Task] = None,
-    args: Optional[argparse.Namespace] = None,
-) -> pd.DataFrame:
+def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.DataFrame:
     """
-    SAC training.
+    Main training loop over the PPO algorithm.
     Logs to W&B, evaluates, and (optionally) uploads models as ClearML artifacts.
     """
-    os.environ['WANDB_API_KEY'] = 'b1e375dd07d0792bb5601ffbb8b45cf2f84f5d20'
-
-    algo_name = "SAC"
     results = []
 
+    algo_name = "PPO"
+    AlgoClass = PPO
     print(f"=== Training {algo_name} ===")
 
     # --- W&B run for this algorithm ---
@@ -161,134 +144,62 @@ def train(
             "algorithm": algo_name,
             "train_steps": train_steps,
             "eval_episodes": EVAL_EPISODES,
-            "learning_rate": args.learning_rate,
-            "gamma": args.gamma,
-            "batch_size": args.batch_size,
-            "tau": args.tau,
-            "ent_coef": args.ent_coef,
-            "learning_starts": args.learning_starts,
-            "train_freq": args.train_freq,
-            "gradient_steps": args.gradient_steps,
-            "target_entropy": args.target_entropy,
-        } if args is not None else None,
+        },
+        sync_tensorboard=True,  # capture rollout metrics from SB3 logger
         reinit=True,  # allow multiple runs in one process
     )
 
     # Create fresh training env
-    env = make_env(seed=base_seed)
+    train_env = make_vec_env(make_env, n_envs=1, vec_env_cls=DummyVecEnv, seed=base_seed)
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=10)
 
-    # handle "auto" vs numeric target_entropy
-    if args is not None:
-        if isinstance(args.target_entropy, str) and args.target_entropy.lower().startswith("auto"):
-            target_entropy = "auto"
-        else:
-            target_entropy = float(args.target_entropy)
-        learning_rate = args.learning_rate
-        gamma = args.gamma
-        batch_size = args.batch_size
-        tau = args.tau
-        ent_coef = args.ent_coef
-        learning_starts = args.learning_starts
-        train_freq = args.train_freq
-        gradient_steps = args.gradient_steps
-    else:
-        # Fallback to SAC defaults if args not provided
-        target_entropy = "auto"
-        learning_rate = 3e-4
-        gamma = 0.99
-        batch_size = 256
-        tau = 0.005
-        ent_coef = "auto"
-        learning_starts = 1000
-        train_freq = 1
-        gradient_steps = 1
-
-    model = SAC(
+    model = AlgoClass(
         "MlpPolicy",
-        env,
+        train_env,
+        device="cuda",
         verbose=1,
         seed=base_seed,
-        learning_rate=learning_rate,
-        gamma=gamma,
-        batch_size=batch_size,
-        tau=tau,
-        ent_coef=ent_coef,
-        learning_starts=learning_starts,
-        train_freq=train_freq,
-        gradient_steps=gradient_steps,
-        target_entropy=target_entropy,
+        tensorboard_log=TENSORBOARD_DIR,
     )
 
-    callbacks = [WandbCallback(log="all", verbose=1)]
-
-    # -------- Incremental Training + Periodic Saving --------
-    save_every = 500_000     # how many steps per chunk
-    num_chunks = train_steps // save_every
-    remainder = train_steps % save_every
-
-    os.makedirs(f"models/{run.id}", exist_ok=True)
+    checkpoint_callback = CheckpointArtifactCallback(
+        save_freq=CHECKPOINT_FREQ,
+        save_dir=MODELS_DIR,
+        algo_name=algo_name,
+        task=task,
+        verbose=1,
+    )
+    callbacks = [WandbCallback(log="all", verbose=1), checkpoint_callback]
 
     start_time = time.time()
-
-    for i in range(num_chunks):
-        print(f"[{algo_name}] Training chunk {i+1}/{num_chunks} ...")
-
-        model.learn(
-            total_timesteps=save_every,
-            callback=callbacks,
-            progress_bar=True,
-            reset_num_timesteps=False,         # <-- important
-            tb_log_name=f"runs/{run.id}",      # <-- keeps TB logs consistent
-        )
-
-        # Save checkpoint
-        checkpoint_path = f"models/{run.id}/{save_every*(i+1)}"
-        model.save(checkpoint_path)
-        print(f"[{algo_name}] Saved checkpoint: {checkpoint_path}.zip")
-
-
-        # Optionally upload to ClearML as artifact
-        if task is not None:
-            try:
-                task.upload_artifact(
-                    name=f"{algo_name}_checkpoint_{save_every*(i+1)}",
-                    artifact_object=checkpoint_path + ".zip",
-                )
-                print(f"[{algo_name}] Uploaded checkpoint to ClearML: {checkpoint_path}.zip")
-            except Exception as e:
-                print(f"[{algo_name}] Failed to upload checkpoint artifact: {e}")
-
-    # Train leftover steps (or all steps if less than save_every)
-    if remainder > 0 or num_chunks == 0:
-        leftover = remainder if remainder > 0 else train_steps
-        print(f"[{algo_name}] Training final chunk of {leftover} steps ...")
-        model.learn(
-            total_timesteps=leftover,
-            callback=callbacks,
-            progress_bar=True,
-            reset_num_timesteps=False,
-            tb_log_name=f"runs/{run.id}",
-        )
-        checkpoint_path = f"models/{run.id}/{save_every*num_chunks + leftover}"
-        model.save(checkpoint_path)
-        print(f"[{algo_name}] Saved checkpoint: {checkpoint_path}.zip")
-        if task is not None:
-            try:
-                task.upload_artifact(
-                    name=f"{algo_name}_checkpoint_{save_every*num_chunks + leftover}",
-                    artifact_object=checkpoint_path + ".zip",
-                )
-                print(f"[{algo_name}] Uploaded checkpoint to ClearML: {checkpoint_path}.zip")
-            except Exception as e:
-                print(f"[{algo_name}] Failed to upload checkpoint artifact: {e}")
-
+    model.learn(
+        total_timesteps=train_steps,
+        callback=callbacks,
+        log_interval=1,
+        tb_log_name=f"{algo_name}_{run.id}",
+    )
     train_time = time.time() - start_time
-    env.close()
+    obs_rms = train_env.obs_rms
+    train_env.close()
+
+    # Save final model (if not already saved on the last checkpoint)
+    final_step = model.num_timesteps
+    model_path = os.path.join(
+        MODELS_DIR,
+        f"{algo_name}_{final_step}_steps"
+    )
+    if final_step != checkpoint_callback.last_saved_step:
+        model.save(model_path)
+        print(f"[{algo_name}] Saved model to {model_path}.zip")
+        log_artifacts(model_path, f"{algo_name}_final_{final_step}", task)
 
     # --- Evaluation (reward-based) ---
     print(f"[{algo_name}] Evaluating on {EVAL_EPISODES} episodes (reward)...")
     eval_env_seed = None if base_seed is None else base_seed + 1
-    eval_env = make_env(seed=eval_env_seed)
+    eval_env = make_vec_env(make_env, n_envs=1, vec_env_cls=DummyVecEnv, seed=eval_env_seed)
+    eval_env = VecNormalize(eval_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10)
+    if obs_rms is not None:
+        eval_env.obs_rms = obs_rms
     mean_reward, std_reward = evaluate_policy(
         model,
         eval_env,
@@ -297,56 +208,68 @@ def train(
     )
 
     # --- Evaluation (distance-based) ---
-    print(f"[{algo_name}] Evaluating distance and stability metrics...")
-    base_env = eval_env.env if hasattr(eval_env, "env") else eval_env
-    stats = evaluate_episode_stats(
+    print(f"[{algo_name}] Evaluating final distance to target...")
+    mean_dist, std_dist = evaluate_final_distance(
         model,
         episodes=EVAL_EPISODES,
         max_episode_steps=1000,
         seed=base_seed,
-        success_threshold=base_env.success_threshold,
+        obs_rms=obs_rms,
     )
 
+    successes = 0
+
+    success_threshold = getattr(
+        eval_env.unwrapped, "success_threshold", getattr(eval_env, "success_threshold", None)
+    )
+
+    # Success rate loop uses a fresh env to avoid reusing closed one
+    success_env_seed = None if base_seed is None else base_seed + 2
+    success_env = make_vec_env(make_env, n_envs=1, vec_env_cls=DummyVecEnv, seed=success_env_seed)
+    success_env = VecNormalize(success_env, training=False, norm_obs=True, norm_reward=False, clip_obs=10)
+    if obs_rms is not None:
+        success_env.obs_rms = obs_rms
+    for _ in range(EVAL_EPISODES):
+        obs = success_env.reset()
+        while True:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, _, dones, infos = success_env.step(action)
+            if bool(dones[0]):
+                break
+
+        dist = infos[0].get("distance", np.nan)  # OT2ReachEnv must put this in info
+        if success_threshold is not None and dist < success_threshold:
+            successes += 1
+
+    success_env.close()
     eval_env.close()
+
+    success_rate = successes / EVAL_EPISODES
 
     print(
         f"[{algo_name}] mean_reward={mean_reward:.2f} +/- {std_reward:.2f} (std), "
-        f"mean_final_dist={stats['mean_final']:.4f} +/- {stats['std_final']:.4f} (std), "
-        f"mean_min_dist={stats['mean_min']:.4f}, "
-        f"success_rate_1mm={stats['success_rate_1mm']:.2%}, "
-        f"success_rate_5mm={stats['success_rate_5mm']:.2%}, "
-        f"success_rate_10mm={stats['success_rate_10mm']:.2%}, "
-        f"train_time={train_time/60:.1f} min"
+        f"mean_final_dist={mean_dist:.4f} +/- {std_dist:.4f} (std), "
+        f"success_rate={success_rate:.2%}, train_time={train_time/60:.1f} min"
     )
 
     # --- Log to W&B ---
     wandb.define_metric("eval/mean_final_distance", summary="min")
     wandb.define_metric("eval/std_final_distance", summary="min")
-    wandb.define_metric("eval/mean_min_distance", summary="min")
-    wandb.define_metric("eval/std_min_distance", summary="min")
     wandb.define_metric("eval/success_rate", summary="max")
-    wandb.define_metric("eval/success_rate_5mm", summary="max")
-    wandb.define_metric("eval/success_rate_10mm", summary="max")
     wandb.define_metric("eval/success_count", summary="max")
-    wandb.define_metric("eval/mean_episode_len", summary="min")
-    wandb.define_metric("eval/truncation_rate", summary="min")
     wandb.define_metric("eval/mean_reward", summary="max")
     wandb.define_metric("eval/std_reward", summary="min")
+    wandb.define_metric("rollout/ep_len_mean", summary="max")
+    wandb.define_metric("rollout/ep_rew_mean", summary="max")
 
     wandb.log(
         {
             "eval/mean_reward": mean_reward,
             "eval/std_reward": std_reward,
-            "eval/mean_final_distance": stats["mean_final"],
-            "eval/std_final_distance": stats["std_final"],
-            "eval/mean_min_distance": stats["mean_min"],
-            "eval/std_min_distance": stats["std_min"],
-            "eval/success_rate": stats["success_rate_1mm"],
-            "eval/success_rate_5mm": stats["success_rate_5mm"],
-            "eval/success_rate_10mm": stats["success_rate_10mm"],
-            "eval/success_count": int(stats["success_rate_1mm"] * EVAL_EPISODES),
-            "eval/mean_episode_len": stats["mean_steps"],
-            "eval/truncation_rate": stats["truncation_rate"],
+            "eval/mean_final_distance": mean_dist,
+            "eval/std_final_distance": std_dist,
+            "eval/success_rate": success_rate,
+            "eval/success_count": successes,
             "train/train_time_sec": train_time,
         },
         step=train_steps,
@@ -355,25 +278,12 @@ def train(
     # Summary (shows in W&B tables)
     run.summary["eval/mean_reward"] = mean_reward
     run.summary["std_reward"] = std_reward
-    run.summary["eval/mean_final_distance"] = stats["mean_final"]
-    run.summary["eval/std_final_distance"] = stats["std_final"]
-    run.summary["eval/mean_min_distance"] = stats["mean_min"]
-    run.summary["eval/std_min_distance"] = stats["std_min"]
-    run.summary["eval/success_count"] = int(stats["success_rate_1mm"] * EVAL_EPISODES)
-    run.summary["eval/success_rate"] = stats["success_rate_1mm"]
-    run.summary["eval/success_rate_5mm"] = stats["success_rate_5mm"]
-    run.summary["eval/success_rate_10mm"] = stats["success_rate_10mm"]
-    run.summary["eval/mean_episode_len"] = stats["mean_steps"]
-    run.summary["eval/truncation_rate"] = stats["truncation_rate"]
+    run.summary["eval/mean_final_distance"] = mean_dist
+    run.summary["eval/std_final_distance"] = std_dist
+    run.summary["eval/success_count"] = successes
+    run.summary["eval/success_rate"] = success_rate
     run.summary["train_time_sec"] = train_time
-    run.summary["last_checkpoint"] = f"models/{run.id}/{save_every*num_chunks + (remainder if remainder > 0 else (train_steps if num_chunks == 0 else 0))}.zip"
-    run.summary["checkpoints"] = [
-        f"models/{run.id}/{save_every*(i+1)}.zip" for i in range(num_chunks)
-    ] + (
-        [f"models/{run.id}/{save_every*num_chunks + (remainder if remainder > 0 else train_steps)}.zip"]
-        if (remainder > 0 or num_chunks == 0)
-        else []
-    )
+    run.summary["model_path"] = model_path + ".zip"
 
     results.append(
         {
@@ -383,23 +293,16 @@ def train(
             "eval_episodes": EVAL_EPISODES,
             "mean_reward": mean_reward,
             "std_reward": std_reward,
-            "mean_final_distance": stats["mean_final"],
-            "std_final_distance": stats["std_final"],
-            "mean_min_distance": stats["mean_min"],
-            "std_min_distance": stats["std_min"],
-            "success_rate": stats["success_rate_1mm"],
-            "success_rate_5mm": stats["success_rate_5mm"],
-            "success_rate_10mm": stats["success_rate_10mm"],
+            "mean_final_distance": mean_dist,
+            "std_final_distance": std_dist,
+            "success_count": successes,
+            "success_rate": success_rate,
             "train_time_sec": train_time,
-            "checkpoints": [
-                f"models/{run.id}/{save_every*(i+1)}.zip"
-                for i in range(num_chunks)
-            ]
+            "model_path": model_path + ".zip",
         }
     )
 
     run.finish()
-    wandb.finish()
 
     # ---------- Aggregate & results ----------
 
@@ -412,6 +315,7 @@ def train(
     print("=== Benchmark Results (sorted by distance, then reward) ===")
     print(df_sorted.to_string(index=False))
 
+    wandb.finish()
     return df_sorted
 
 
@@ -423,17 +327,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_steps", type=int, default=5_000_000)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--learning_rate", type=float, default=3e-4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--tau", type=float, default=0.005)
-    parser.add_argument("--ent_coef", type=str, default="auto")   # can also be "auto_1.0"
-    parser.add_argument("--learning_starts", type=int, default=1000)
-    parser.add_argument("--train_freq", type=int, default=1)       # SB3 allows (freq, unit) too, but int works
-    parser.add_argument("--gradient_steps", type=int, default=1)
-
-    # target_entropy can be "auto" or a number, so parse as string then convert later
-    parser.add_argument("--target_entropy", type=str, default="auto")
     args = parser.parse_args()
 
     train_steps = args.train_steps
@@ -447,14 +340,6 @@ def main():
 
     # Use the course docker image & default queue
     task.set_base_docker("deanis/2023y2b-rl:latest")
-
-    task.set_script(
-        repository="https://github.com/MaciejCzerniak243552/ot2-rl-243552-maciej.git",
-        branch="main",
-        working_dir="task09_robotics_environment/Y2B-2023-OT2_Twin",
-        entry_point="ClearML.py",
-    )
-
     task.execute_remotely(queue_name="default")  # sends this job to the ADSAI server
 
     # ---------- Code below runs on the remote worker ----------
