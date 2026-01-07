@@ -12,7 +12,7 @@ import pandas as pd
 from typing import Optional
 import wandb
 from wandb.integration.sb3 import WandbCallback
-from sim_wrapper import OT2Env
+from ot2_gym_wrapper import OT2Env
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
