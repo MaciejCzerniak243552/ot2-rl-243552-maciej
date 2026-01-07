@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
-from clearml import Task
-
+import importlib.util
 import os
+import subprocess
+import sys
 import time
+from clearml import Task
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -30,6 +32,19 @@ os.makedirs(TENSORBOARD_DIR, exist_ok=True)
 
 EVAL_EPISODES = 50
 CHECKPOINT_FREQ = 200_000
+
+
+def ensure_tensorboard():
+    if importlib.util.find_spec("tensorboard") is not None:
+        return
+    print("TensorBoard not found; installing for W&B rollout metrics...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "tensorboard"])
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "TensorBoard is required for W&B rollout metrics. "
+            "Install it in the ClearML worker environment."
+        ) from exc
 
 
 def make_env(seed=None):
@@ -136,6 +151,7 @@ def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.D
     print(f"=== Training {algo_name} ===")
 
     # --- W&B run for this algorithm ---
+    ensure_tensorboard()
     if "WANDB_API_KEY" in os.environ:
         wandb.login(key=os.environ["WANDB_API_KEY"], relogin=False)
     else:
