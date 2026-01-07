@@ -80,7 +80,7 @@ class OT2Env(gym.Env):
         observation = np.concatenate([pipette_position, self.goal_position]).astype(np.float32)
 
         distance = float(np.linalg.norm(self.goal_position - pipette_position))
-        reward = self.prev_distance -distance - self.step_penalty
+        reward = -distance - self.step_penalty
         self.prev_distance = distance
 
         if distance < 0.1:

@@ -13,7 +13,7 @@ from typing import Optional
 import wandb
 from wandb.integration.sb3 import WandbCallback
 from ot2_gym_wrapper import OT2Env
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_util import make_vec_env
@@ -141,13 +141,13 @@ class CheckpointArtifactCallback(BaseCallback):
 
 def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.DataFrame:
     """
-    Main training loop over the PPO algorithm.
+    Main training loop over the SAC algorithm.
     Logs to W&B, evaluates, and (optionally) uploads models as ClearML artifacts.
     """
     results = []
 
-    algo_name = "PPO"
-    AlgoClass = PPO
+    algo_name = "SAC"
+    AlgoClass = SAC
     print(f"=== Training {algo_name} ===")
 
     # --- W&B run for this algorithm ---
@@ -174,7 +174,7 @@ def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.D
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=10)
 
     model = AlgoClass(
-        "MlpPolicy",
+        "MlSAClicy",
         train_env,
         device="cuda",
         verbose=1,
@@ -355,7 +355,7 @@ def main():
     # ---------- ClearML task init ----------
     task = Task.init(
         project_name="OT2-RL/243552-Maciej",   # you can rename the project if you want
-        task_name=f"PPO_train_{train_steps}",
+        task_name=f"SAC_train_{train_steps}",
     )
     wandb_params = {"wandb_api_key": "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"}
     task.connect(wandb_params, name="wandb")
