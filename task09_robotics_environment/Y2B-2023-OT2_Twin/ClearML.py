@@ -174,7 +174,7 @@ def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.D
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=False, clip_obs=10)
 
     model = AlgoClass(
-        "MlSAClicy",
+        "MlpPolicy",
         train_env,
         device="cuda",
         verbose=1,
