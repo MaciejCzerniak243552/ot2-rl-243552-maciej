@@ -341,6 +341,10 @@ def main():
         project_name="OT2-RL/243552-Maciej",   # you can rename the project if you want
         task_name=f"PPO_train_{train_steps}",
     )
+    wandb_params = {"wandb_api_key": "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"}
+    task.connect(wandb_params, name="wandb")
+    if wandb_params["wandb_api_key"]:
+        os.environ["WANDB_API_KEY"] = wandb_params["wandb_api_key"]
 
     # Use the course docker image & default queue
     task.set_base_docker("deanis/2023y2b-rl:latest")
