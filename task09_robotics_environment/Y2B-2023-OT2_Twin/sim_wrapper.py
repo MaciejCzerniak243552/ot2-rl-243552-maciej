@@ -91,7 +91,7 @@ class OT2Env(gym.Env):
             reward += 10
         terminated = distance < self.success_threshold
         if terminated:
-            reward += self.success_reward
+            reward += self.success_reward + ((self.max_episode_steps - self.steps) * 10)
 
         truncated = (self.steps + 1) >= self.max_episode_steps
         if truncated:
