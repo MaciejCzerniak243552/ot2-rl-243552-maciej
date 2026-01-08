@@ -110,6 +110,26 @@ def log_artifacts(model_path, artifact_name, task=None):
         except Exception as e:
             print(f"[{artifact_name}] Failed to upload artifact to ClearML: {e}")
 
+def log_vecnorm_artifacts(stats_path, artifact_name, task=None):
+    if wandb.run is not None:
+        try:
+            artifact = wandb.Artifact(name=artifact_name, type="vecnormalize")
+            artifact.add_file(stats_path)
+            wandb.log_artifact(artifact)
+            print(f"[{artifact_name}] Uploaded VecNormalize stats to W&B artifacts.")
+        except Exception as e:
+            print(f"[{artifact_name}] Failed to upload VecNormalize stats to W&B: {e}")
+
+    if task is not None:
+        try:
+            task.upload_artifact(
+                name=artifact_name,
+                artifact_object=stats_path,
+            )
+            print(f"[{artifact_name}] Uploaded VecNormalize stats to ClearML artifacts.")
+        except Exception as e:
+            print(f"[{artifact_name}] Failed to upload VecNormalize stats to ClearML: {e}")
+
 class CheckpointArtifactCallback(BaseCallback):
     def __init__(self, save_freq, save_dir, algo_name, task=None, verbose=0):
         super().__init__(verbose)
@@ -125,6 +145,18 @@ class CheckpointArtifactCallback(BaseCallback):
         if self.verbose > 0:
             print(f"[{self.algo_name}] Saved checkpoint to {model_path}.zip")
         log_artifacts(model_path, f"{self.algo_name}_checkpoint_{step}", self.task)
+        if hasattr(self.training_env, "save"):
+            stats_path = os.path.join(
+                self.save_dir, f"{self.algo_name}_{step}_steps_vecnormalize.pkl"
+            )
+            self.training_env.save(stats_path)
+            if self.verbose > 0:
+                print(f"[{self.algo_name}] Saved VecNormalize stats to {stats_path}")
+            log_vecnorm_artifacts(
+                stats_path,
+                f"{self.algo_name}_vecnormalize_checkpoint_{step}",
+                self.task,
+            )
 
     def _on_step(self):
         if self.save_freq <= 0:
@@ -200,7 +232,6 @@ def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.D
     )
     train_time = time.time() - start_time
     obs_rms = train_env.obs_rms
-    train_env.close()
 
     # Save final model (if not already saved on the last checkpoint)
     final_step = model.num_timesteps
@@ -208,10 +239,23 @@ def train(train_steps: int, base_seed: int, task: Optional[Task] = None) -> pd.D
         MODELS_DIR,
         f"{algo_name}_{final_step}_steps"
     )
+    vecnorm_path = os.path.join(
+        MODELS_DIR,
+        f"{algo_name}_{final_step}_steps_vecnormalize.pkl"
+    )
     if final_step != checkpoint_callback.last_saved_step:
         model.save(model_path)
         print(f"[{algo_name}] Saved model to {model_path}.zip")
         log_artifacts(model_path, f"{algo_name}_final_{final_step}", task)
+        if hasattr(train_env, "save"):
+            train_env.save(vecnorm_path)
+            print(f"[{algo_name}] Saved VecNormalize stats to {vecnorm_path}")
+            log_vecnorm_artifacts(
+                vecnorm_path,
+                f"{algo_name}_vecnormalize_final_{final_step}",
+                task,
+            )
+    train_env.close()
 
     # --- Evaluation (reward-based) ---
     print(f"[{algo_name}] Evaluating on {EVAL_EPISODES} episodes (reward)...")
