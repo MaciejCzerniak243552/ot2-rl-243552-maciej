@@ -21,8 +21,8 @@ class OT2Env(gym.Env):
         self.max_episode_steps = max_steps if max_steps is not None else max_episode_steps
 
         # Working envelope bounds determined from the datalab task
-        self.env_low = np.array([-0.1871, -0.1706, 0.1694], dtype=np.float32)
-        self.env_high = np.array([0.2531, 0.2195, 0.2896], dtype=np.float32)
+        self.env_low = np.array([-0.1871, -0.1706, 0.2294], dtype=np.float32)
+        self.env_high = np.array([0.2531, 0.2196, 0.3495], dtype=np.float32)
 
         # Define action and observation space
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
